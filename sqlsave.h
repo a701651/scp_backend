@@ -3,6 +3,50 @@
 #include <shared_mutex>
 
 //---------- 数据模型 ----------
+
+struct verify_token {
+    int64_t id = 0;
+    int64_t user_id = 0;
+    std::string token;
+    int is_use = 0;
+    bool dirty = false;
+};
+
+struct mail {
+    int64_t id = 0;
+    int64_t user_id = 0;
+    std::string title;
+    std::string content;
+    int64_t send_time = 0;
+    int is_new = 1;
+    std::string form_name;
+    int64_t out_time = 0;
+    std::string item_json;
+    int is_claim = 0;
+    bool dirty = false;
+};
+
+struct sever_list {
+    int64_t id = 0;
+    int64_t user_id = 0;
+    std::string ip;
+    std::string name;
+    std::string introduction;
+    int type = 0;
+    int is_test = 0;
+    int64_t last_updata = 0;
+    bool dirty = false;
+};
+
+struct ban_history {
+    int64_t id = 0;
+    int64_t user_id = 0;
+    int64_t start_ban_time = 0;
+    int64_t end_ban_time = 0;
+    int ban_reason = 0;
+    bool dirty = false;
+};
+
 struct user {
     int64_t id = 0;
     std::string nickname;
@@ -122,62 +166,25 @@ private:
 
 class sqlsave {
 public:
-    std::unordered_map<int64_t, std::unique_ptr<struct sever_list>> servers_by_id;
     PermissionCache perm_cache;
+
     sqlsave(const std::string& host, int port,
         const std::string& user, const std::string& password,
         const std::string& dbname);
-    bool start();                         
-    std::shared_ptr<ConnectionPool> getPool(); 
-    void refreshServers();                 
+    bool start();
+    std::shared_ptr<ConnectionPool> getPool();
+    void refreshServers();
+
+    // 线程安全：返回服务器列表快照
+    std::vector<sever_list> getServersSnapshot() const;
 
 private:
     std::shared_ptr<ConnectionPool> pool_;
     std::string host_, user_, passwd_, dbname_;
     int port_;
-};
 
+    // 加锁保护
+    mutable std::shared_mutex servers_mtx_;
+    std::unordered_map<int64_t, std::unique_ptr<sever_list>> servers_by_id;
+};
 extern std::unique_ptr<sqlsave> g_db;
-
-struct verify_token {
-    int64_t id = 0;
-    int64_t user_id = 0;
-    std::string token;
-    int is_use = 0;
-    bool dirty = false;
-};
-
-struct mail {
-    int64_t id = 0;
-    int64_t user_id = 0;
-    std::string title;
-    std::string content;
-    int64_t send_time = 0;
-    int is_new = 1;
-    std::string form_name;
-    int64_t out_time = 0;
-    std::string item_json;
-    int is_claim = 0;
-    bool dirty = false;
-};
-
-struct sever_list {
-    int64_t id = 0;
-    int64_t user_id = 0;
-    std::string ip;
-    std::string name;
-    std::string introduction;
-    int type = 0;
-    int is_test = 0;
-    int64_t last_updata = 0;
-    bool dirty = false;
-};
-
-struct ban_history {
-    int64_t id = 0;
-    int64_t user_id = 0;
-    int64_t start_ban_time = 0;
-    int64_t end_ban_time = 0;
-    int ban_reason = 0;
-    bool dirty = false;
-};

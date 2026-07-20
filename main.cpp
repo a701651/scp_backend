@@ -143,7 +143,7 @@ struct session : public std::enable_shared_from_this<session> {
             self->message_complete = true;
             self->parse_params();
             self->parse_post_params();
-            asio::post(*g_db_pool, [self_ptr = self->shared_from_this()]() {
+            asio::post(*g_business_pool, [self_ptr = self->shared_from_this()]() {
                 self_ptr->process_request();
             });
             return 0;
@@ -253,7 +253,6 @@ struct session : public std::enable_shared_from_this<session> {
         int ret = 5;
         std::string device = tmp.device_name.empty() ? "未知设备" : tmp.device_name;
 
-        // ═════ 计时起点 ═════
         auto t_start = std::chrono::steady_clock::now();
         auto ms = [&]() {
             return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -261,6 +260,8 @@ struct session : public std::enable_shared_from_this<session> {
         };
 
         switch (tmp.code) {
+        case 0:
+            out.code = 200; out.msg = "success"; out.data = data; break;
         case 1: // 管理员登录
             ret = adlog(tmp.username, tmp.password, ip, device, out_token);
             switch (ret) {
@@ -286,7 +287,7 @@ struct session : public std::enable_shared_from_this<session> {
                 out.code = 403; out.msg = "权限不足"; out.data = json::array(); break;
             default:
                 out.code = 500; out.msg = "未知错误"; out.data = json::array();
-                error("log 返回未预期的状态码: " + std::to_string(ret)); break;
+                warn("log 返回未预期的状态码: " + std::to_string(ret)); break;
             }
             break;
 
@@ -308,7 +309,7 @@ struct session : public std::enable_shared_from_this<session> {
                 out.code = 500; out.msg = "查询失败"; out.data = json::array(); break;
             default:
                 out.code = 500; out.msg = "未知错误"; out.data = json::array();
-                error("adlist 返回未预期的状态码: " + std::to_string(ret)); break;
+                warn("adlist 返回未预期的状态码: " + std::to_string(ret)); break;
             }
             break;
         }
@@ -336,7 +337,7 @@ struct session : public std::enable_shared_from_this<session> {
                 error("出现登录错误！"); break;
             default:
                 out.code = 500; out.msg = "未知错误"; out.data = json::array();
-                error("log 返回未预期的状态码: " + std::to_string(ret)); break;
+                warn("log 返回未预期的状态码: " + std::to_string(ret)); break;
             }
             break;
         case 4: // 注册
@@ -360,7 +361,7 @@ struct session : public std::enable_shared_from_this<session> {
                 error("出现注册错误！"); break;
             default:
                 out.code = 500; out.msg = "未知错误"; out.data = json::array();
-                error("reg 返回未预期的状态码: " + std::to_string(ret)); break;
+                warn("reg 返回未预期的状态码: " + std::to_string(ret)); break;
             }
             break;
 
@@ -425,7 +426,7 @@ struct session : public std::enable_shared_from_this<session> {
                 out.code = 400; out.msg = "服务器内部错误"; out.data = json::array(); break;
             default:
                 out.code = 500; out.msg = "未知错误"; out.data = json::array();
-                error("getinfo 返回未预期的状态码: " + std::to_string(ret)); break;
+                warn("getinfo 返回未预期的状态码: " + std::to_string(ret)); break;
             }
             break;
 
@@ -448,7 +449,7 @@ struct session : public std::enable_shared_from_this<session> {
                 out.code = 403; out.msg = "无权限"; out.data = json::array(); break;
             default:
                 out.code = 500; out.msg = "未知错误"; out.data = json::array();
-                error("v_token 返回未预期的状态码: " + std::to_string(ret)); break;
+                warn("v_token 返回未预期的状态码: " + std::to_string(ret)); break;
             }
             break;
         }
@@ -496,7 +497,7 @@ struct session : public std::enable_shared_from_this<session> {
                 out.code = 400; out.msg = "服务器内部错误"; out.data = json::array(); break;
             default:
                 out.code = 500; out.msg = "未知错误"; out.data = json::array();
-                error("logger 返回未预期的状态码: " + std::to_string(ret)); break;
+                warn("logger 返回未预期的状态码: " + std::to_string(ret)); break;
             }
             break;
 
@@ -525,7 +526,7 @@ struct session : public std::enable_shared_from_this<session> {
 
         default:
             out.code = 404; out.msg = "未知接口"; out.data = json::array();
-            error("客户端发送错误的请求: code=" + std::to_string(tmp.code));
+            warn("客户端发送错误的请求: code=" + std::to_string(tmp.code));
             break;
         }
 
@@ -653,7 +654,7 @@ void start() {
     logger("数据库写入超时: " + to_string(GlobalConfig->database.write_timeout) + "s");
     logger("调试模式: " + string(isdebug ? "开启" : "关闭"));
     st();
-    SetEnvironmentVariableA("MYSQL_PLUGIN_DIR",std::string(getpath().begin(), getpath().end()).c_str());
+
     logger("尝试连接数据库...");
     g_db = std::make_unique<sqlsave>(
         GlobalConfig->database.host,
@@ -672,6 +673,8 @@ void start() {
     auto end_time = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
     logger("启动完成，耗时 " + std::to_string(duration) + " 毫秒");
+    
+
 }
 int main() {
     try {

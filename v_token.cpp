@@ -12,13 +12,11 @@ using namespace std;
 */
 int v_token(const std::string& token, std::string& out) {
     if (token.empty()) return 1;
-    if (!check_permission(token, { "get_user_verify_token" })) return 4;
-
+    auto opt_user = check_permission_get_user(token, { "get_user_verify_token" });
+    if (!opt_user.has_value()) return 4;   // 无权限 或 token无效
     auto pool = g_db->getPool();
-    auto user = pool->token_user(token);
-    if (!user.has_value()) return 2;
     std::string vtoken = encrypt::GenerateToken();
-    if (!pool->s_verifytoken(user->id, vtoken)) return 3;
+    if (!pool->s_verifytoken(opt_user->id, vtoken)) return 3;
     out = vtoken;
     return 0;
 }

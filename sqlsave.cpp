@@ -1,6 +1,6 @@
 #include "sqlsave.h"
 #include "config.h"
-
+#include "othertool.h"
 void PermissionCache::loadAll(std::shared_ptr<ConnectionPool> pool) {
     auto conn = pool->getConnection();
 
@@ -50,6 +50,17 @@ ConnectionPool::ConnectionPool(const std::string& host, int port,
     : host_(host), port_(port), user_(user), passwd_(passwd), schema_(schema),
     poolSize_(poolSize), driver_(nullptr) {
     driver_ = sql::mysql::get_driver_instance();
+    std::string plugin_dir = find_mysql_plugin_dir();
+    if (!plugin_dir.empty()) {
+        std::string dll_path = plugin_dir + "\\mysql_native_password.dll";
+        HMODULE hMod = LoadLibraryA(dll_path.c_str());
+        if (hMod) {
+            // 预加载成功，后续 Connector 调用 LoadLibrary 时会直接命中
+        }
+        else {
+            // 预加载失败不致命（DLL 不存在/损坏），Connector 走默认搜索
+        }
+    }
     for (int i = 0; i < poolSize_; ++i) {
         auto conn = driver_->connect("tcp://" + host_ + ":" + std::to_string(port_), user_, passwd_);
         conn->setSchema(schema_);
@@ -58,6 +69,7 @@ ConnectionPool::ConnectionPool(const std::string& host, int port,
         pool_.emplace(std::move(conn));
     }
 }
+
 
 ConnectionPool::~ConnectionPool() {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -326,20 +338,38 @@ void sqlsave::refreshServers() {
     std::unique_ptr<sql::ResultSet> res(stmt->executeQuery(
         "SELECT id, user_id, ip, name, introduction, type, is_test, last_updata FROM sever_list"
     ));
-    servers_by_id.clear();
+
+    // 先构建临时 map（无锁），缩短持锁时间
+    std::unordered_map<int64_t, std::unique_ptr<sever_list>> new_map;
     while (res->next()) {
         auto s = std::make_unique<sever_list>();
-        s->id = res->getInt64("id");
-        s->user_id = res->getInt64("user_id");
-        s->ip = res->getString("ip");
-        s->name = res->getString("name");
+        s->id           = res->getInt64("id");
+        s->user_id      = res->getInt64("user_id");
+        s->ip           = res->getString("ip");
+        s->name         = res->getString("name");
         s->introduction = res->getString("introduction");
-        s->type = res->getInt("type");
-        s->is_test = res->getInt("is_test");
-        s->last_updata = res->getInt64("last_updata");
-        servers_by_id[s->id] = std::move(s);
+        s->type         = res->getInt("type");
+        s->is_test      = res->getInt("is_test");
+        s->last_updata  = res->getInt64("last_updata");
+        new_map[s->id]  = std::move(s);
     }
     pool_->releaseConnection(std::move(conn));
+
+    // 仅在替换时持写锁，临界区极短（微秒级）
+    {
+        std::unique_lock lock(servers_mtx_);
+        servers_by_id = std::move(new_map);
+    }
+}
+
+std::vector<sever_list> sqlsave::getServersSnapshot() const {
+    std::shared_lock lock(servers_mtx_);    // 读锁，允许并发
+    std::vector<sever_list> snapshot;
+    snapshot.reserve(servers_by_id.size());
+    for (const auto& [id, s] : servers_by_id) {
+        snapshot.push_back(*s);              // 值拷贝
+    }
+    return snapshot;
 }
 
 std::shared_ptr<ConnectionPool> sqlsave::getPool() {

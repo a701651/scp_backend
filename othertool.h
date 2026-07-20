@@ -1,6 +1,7 @@
 #pragma once
 #include "common.h"
 #include "API_tool.h"
+#include "sqlsave.h"
 using json = nlohmann::json;
 
 // º”√‹π§æﬂ
@@ -29,6 +30,9 @@ std::wstring getpath();
 std::string url_decode(const std::string& str);
 
 bool check_permission(const std::string& user_token,const std::vector<std::string>& required_perms);
-
+std::optional<user> check_permission_get_user(
+    const std::string& user_token,
+    const std::vector<std::string>& required_perms);
 void StartCpuMonitor();
 double GetCpuUsageCached();
+std::string find_mysql_plugin_dir();

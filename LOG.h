@@ -32,7 +32,9 @@ inline std::string log_time() {
 inline void logger(const std::string& str) {
     std::cout << "[" << log_time() << " LOG] " << str << std::endl;
 }
-
+inline void warn(const std::string& str) {
+    std::cerr << "\033[33m[" << log_time() << " WARN] " << str << "\033[0m" << std::endl;
+}
 inline void error(const std::string& str) {
     std::cerr << "\033[31m[" << log_time() << " ERROR] " << str << "\033[0m" << std::endl;
 }

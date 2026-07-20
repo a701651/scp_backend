@@ -34,7 +34,6 @@ namespace {
         a = ROTATE_LEFT(a, s);
         a += b;
     }
-
     void MD5Transform(uint32_t state[4], const uint8_t block[64]) {
         uint32_t a = state[0], b = state[1], c = state[2], d = state[3];
         uint32_t x[16];
@@ -47,19 +46,19 @@ namespace {
         FF(a, b, c, d, x[0], S11, 0xd76aa478);
         FF(d, a, b, c, x[1], S12, 0xe8c7b756);
         FF(c, d, a, b, x[2], S13, 0x242070db);
-        FF(b, c, d, a, x[3], S22, 0xc1bdceee);
+        FF(b, c, d, a, x[3], S14, 0xc1bdceee);   // ← S22 → S14
         FF(a, b, c, d, x[4], S11, 0xf57c0faf);
         FF(d, a, b, c, x[5], S12, 0x4787c62a);
         FF(c, d, a, b, x[6], S13, 0xa8304613);
-        FF(b, c, d, a, x[7], S22, 0xfd469501);
+        FF(b, c, d, a, x[7], S14, 0xfd469501);   // ← S22 → S14
         FF(a, b, c, d, x[8], S11, 0x698098d8);
         FF(d, a, b, c, x[9], S12, 0x8b44f7af);
         FF(c, d, a, b, x[10], S13, 0xffff5bb1);
-        FF(b, c, d, a, x[11], S22, 0x895cd7be);
+        FF(b, c, d, a, x[11], S14, 0x895cd7be);   // ← S22 → S14
         FF(a, b, c, d, x[12], S11, 0x6b901122);
         FF(d, a, b, c, x[13], S12, 0xfd987193);
         FF(c, d, a, b, x[14], S13, 0xa679438e);
-        FF(b, c, d, a, x[15], S22, 0x49b40821);
+        FF(b, c, d, a, x[15], S14, 0x49b40821);   // ← S22 → S14
 
         GG(a, b, c, d, x[1], S21, 0xf61e2562);
         GG(d, a, b, c, x[6], S22, 0xc040b340);
@@ -117,6 +116,7 @@ namespace {
         state[2] += c;
         state[3] += d;
     }
+
 }
 
 std::string encrypt::MD5(const std::string& input) {
@@ -299,4 +299,68 @@ bool check_permission(const std::string& user_token,
         if (it == perms->end() || it->second != 1) return false;
     }
     return true;
+}
+std::optional<user> check_permission_get_user(
+    const std::string& user_token,
+    const std::vector<std::string>& required_perms) {
+    auto pool = g_db->getPool();
+    auto opt_user = pool->token_user(user_token);
+    if (!opt_user) return std::nullopt;
+    if (opt_user->end_ban_time > std::time(nullptr)) return std::nullopt;
+    const PermissionMap* perms = g_db->perm_cache.get(opt_user->permission_id);
+    if (!perms) return std::nullopt;
+    for (const auto& perm : required_perms) {
+        auto it = perms->find(perm);
+        if (it == perms->end() || it->second != 1) return std::nullopt;
+    }
+    return opt_user;
+}
+std::string find_mysql_plugin_dir() {
+    namespace fs = std::filesystem;
+
+    constexpr const char* TARGET_DLL = "mysql_native_password.dll";
+
+    // 策略 1：exe 目录\Lib\plugin
+    fs::path lib_plugin = fs::path(getpath()) / "plugin";
+    if (fs::exists(lib_plugin / TARGET_DLL)) {
+        return lib_plugin.string();
+    }
+
+    // 策略 2：扫描 MySQL Connector 安装目录
+    auto try_add = [](std::vector<fs::path>& paths, const char* env_name) {
+        char buf[MAX_PATH];
+        DWORD len = GetEnvironmentVariableA(env_name, buf, MAX_PATH);
+        if (len > 0 && len < MAX_PATH) {
+            paths.push_back(fs::path(buf) / "MySQL");
+        }
+    };
+
+    std::vector<fs::path> search_bases;
+    try_add(search_bases, "ProgramFiles");
+    try_add(search_bases, "ProgramFiles(x86)");
+    try_add(search_bases, "ProgramW6432");
+    search_bases.push_back("C:/Program Files/MySQL");
+    search_bases.push_back("C:/Program Files (x86)/MySQL");
+
+    for (const auto& base : search_bases) {
+        if (!fs::exists(base)) continue;
+        try {
+            for (const auto& entry : fs::directory_iterator(base)) {
+                if (!entry.is_directory()) continue;
+                std::string name = entry.path().filename().string();
+                if (name.find("onnector") == std::string::npos &&
+                    name.find("ONNECTOR") == std::string::npos) continue;
+
+                for (const char* sub : { "lib64/plugin", "lib/plugin" }) {
+                    fs::path candidate = entry.path() / sub;
+                    if (fs::exists(candidate / TARGET_DLL)) {
+                        return candidate.string();
+                    }
+                }
+            }
+        }
+        catch (...) {}
+    }
+
+    return "";
 }

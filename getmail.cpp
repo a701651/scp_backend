@@ -15,14 +15,13 @@ using json = nlohmann::json;
 */
 int maillist(const string& token, string& out) {
     if (token.empty()) return 1;
-    if (!check_permission(token, { "get_mail" })) return 2;
+
+    auto opt_user = check_permission_get_user(token, { "get_mail" });
+    if (!opt_user.has_value()) return 2;
 
     auto pool = g_db->getPool();
-    auto user = pool->token_user(token);
-    if (!user.has_value()) return 3;
-
     int limit = GlobalConfig->server.mail_max_count;
-    auto mails = pool->id_user(user->id, limit);
+    auto mails = pool->id_user(opt_user->id, limit);
 
     json arr = json::array();
     for (const auto& m : mails) {
