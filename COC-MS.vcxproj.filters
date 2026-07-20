@@ -1,0 +1,141 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="源文件">
+      <UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier>
+      <Extensions>cpp;c;cc;cxx;c++;cppm;ixx;def;odl;idl;hpj;bat;asm;asmx</Extensions>
+    </Filter>
+    <Filter Include="头文件">
+      <UniqueIdentifier>{93995380-89BD-4b04-88EB-625FBE52EBFB}</UniqueIdentifier>
+      <Extensions>h;hh;hpp;hxx;h++;hm;inl;inc;ipp;xsd</Extensions>
+    </Filter>
+    <Filter Include="资源文件">
+      <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
+      <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
+    </Filter>
+    <Filter Include="头文件\API">
+      <UniqueIdentifier>{d1d607a6-0115-4c51-b904-786605e771d0}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="源文件\API">
+      <UniqueIdentifier>{8e44fe06-69af-4240-9394-cca24000cd9e}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="头文件\API\web">
+      <UniqueIdentifier>{c696a646-58ed-4a66-a7b2-f1bcd1e67903}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="源文件\API\web">
+      <UniqueIdentifier>{93cfdd47-908b-4410-9db4-bc8243052efb}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="头文件\API\user">
+      <UniqueIdentifier>{055785c0-0fbc-40a4-ae4b-1e45ddcf5a9f}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="源文件\API\user">
+      <UniqueIdentifier>{0516a60a-96ef-42e8-804b-96ba8b190462}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="头文件\API\admin">
+      <UniqueIdentifier>{0310f395-1b86-45f4-8844-19274e580af8}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="源文件\API\admin">
+      <UniqueIdentifier>{64482a0a-84be-47c2-bb2e-73125d448d0c}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="main.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="config.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="sqlsave.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="othertool.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="register.cpp">
+      <Filter>源文件\API</Filter>
+    </ClCompile>
+    <ClCompile Include="login.cpp">
+      <Filter>源文件\API</Filter>
+    </ClCompile>
+    <ClCompile Include="get_token.cpp">
+      <Filter>源文件\API</Filter>
+    </ClCompile>
+    <ClCompile Include="web_get_token.cpp">
+      <Filter>源文件\API\web</Filter>
+    </ClCompile>
+    <ClCompile Include="getinfo.cpp">
+      <Filter>源文件\API\user</Filter>
+    </ClCompile>
+    <ClCompile Include="v_token.cpp">
+      <Filter>源文件\API\user</Filter>
+    </ClCompile>
+    <ClCompile Include="web_v_token.cpp">
+      <Filter>源文件\API\web</Filter>
+    </ClCompile>
+    <ClCompile Include="ad_login.cpp">
+      <Filter>源文件\API\admin</Filter>
+    </ClCompile>
+    <ClCompile Include="ad_userlist.cpp">
+      <Filter>源文件\API\admin</Filter>
+    </ClCompile>
+    <ClCompile Include="getmail.cpp">
+      <Filter>源文件\API\user</Filter>
+    </ClCompile>
+    <ClCompile Include="severlist.cpp">
+      <Filter>源文件\API</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="common.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="LOG.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="othertool.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="API_tool.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="sqlsave.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="register.h">
+      <Filter>头文件\API</Filter>
+    </ClInclude>
+    <ClInclude Include="login.h">
+      <Filter>头文件\API</Filter>
+    </ClInclude>
+    <ClInclude Include="get_token.h">
+      <Filter>头文件\API</Filter>
+    </ClInclude>
+    <ClInclude Include="web_get_token.h">
+      <Filter>头文件\API\web</Filter>
+    </ClInclude>
+    <ClInclude Include="getinfo.h">
+      <Filter>头文件\API\user</Filter>
+    </ClInclude>
+    <ClInclude Include="v_token.h">
+      <Filter>头文件\API\user</Filter>
+    </ClInclude>
+    <ClInclude Include="web_v_token.h">
+      <Filter>头文件\API\web</Filter>
+    </ClInclude>
+    <ClInclude Include="ad_login.h">
+      <Filter>头文件\API\admin</Filter>
+    </ClInclude>
+    <ClInclude Include="ad_userlist.h">
+      <Filter>头文件\API\admin</Filter>
+    </ClInclude>
+    <ClInclude Include="gzpi.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="getmail.h">
+      <Filter>头文件\API\user</Filter>
+    </ClInclude>
+    <ClInclude Include="severlist.h">
+      <Filter>头文件\API</Filter>
+    </ClInclude>
+  </ItemGroup>
+</Project>
