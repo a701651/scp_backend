@@ -3,7 +3,7 @@
 #include"sqlsave.h"
 #include "othertool.h"
 #include "config.h"
-#include "LOG.h"
+#include"log-system.h"
 using namespace std;
 /*
 	* ״̬�룺
@@ -35,7 +35,7 @@ int reg(const string& username, const string& pass,
 	if (!pool->s_user(username, md5pass, now, user_id)) {
 		return 5;
 	}
-	string token = encrypt::GenerateToken();
+	string token = TokenCache::Get();
 	int64_t expire = now + GlobalConfig->server.login_expire;
 	if (!pool->s_logintoken(user_id, token, ip, device, now, expire)) {
 		return 5;

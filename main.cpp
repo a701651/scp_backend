@@ -1,5 +1,4 @@
 ﻿#include"common.h"
-#include"LOG.h"
 #include "othertool.h"
 #include "API_tool.h"
 #include "config.h"
@@ -15,7 +14,7 @@
 #include "ad_userlist.h"
 #include "getmail.h"
 #include "severlist.h"
-
+#include"log-system.h"
 extern "C" {
 #include "llhttp.h"
 }
@@ -28,15 +27,12 @@ bool isdebug = true;
 std::string project_name = "SCP:Completely Out of Control";
 std::string project_type = "Local";
 std::string project_author = "68575";
-std::string project_version = "0.3.0";
+std::string project_version = "0.4.0";
 std::string ls_IP = "0.0.0.0";
 //全局
 std::atomic<bool> running{ true };
 std::unique_ptr<sqlsave> g_db;
-std::atomic<int> active_threads{ 0 };
-const int MAX_THREADS = 100;
-std::unique_ptr<asio::thread_pool> g_business_pool;//线程池
-std::unique_ptr<asio::thread_pool> g_db_pool;
+std::unique_ptr<asio::thread_pool> g_business_pool;
 
 //状态码映射
 inline static const char* text(int code) {
@@ -79,7 +75,7 @@ inline string make_response(
     response.append("Content-Length: ");
     response.append(len_buf, len_len);
     response.append("\r\n");
-    response.append("Connection: close\r\n");
+    response.append("Connection: keep-alive\r\n");
     response.append("\r\n");
     response.append(body);
     return response;
@@ -558,6 +554,17 @@ struct session : public std::enable_shared_from_this<session> {
             self->do_write(std::move(resp));
         });
     }
+    void reset_parser() {
+        llhttp_init(&parser, HTTP_REQUEST, &settings);
+        parser.data = this;
+        tmp_header_field.clear();
+        headers.clear();
+        req_url.clear();
+        req_body.clear();
+        query_params.clear();
+        message_complete = false;
+        buffer.fill(0);
+    }
 
     //启动
     void start() {
@@ -570,9 +577,10 @@ private:
         socket.async_read_some(asio::buffer(buffer),
             [this, self](std::error_code ec, std::size_t length) {
             if (ec) {
-                if (ec != asio::error::eof)
+                if (ec != asio::error::eof &&
+                    ec != asio::error::operation_aborted)   // [FIX] socket.close() 也会触发这个
                     error("读取错误: " + ec.message() + " from " + ip);
-                return;
+                return;   // 连接结束，session 引用归零自动析构
             }
             auto err = llhttp_execute(&parser, buffer.data(), length);
             if (err != HPE_OK) {
@@ -589,7 +597,12 @@ private:
         auto self = shared_from_this();
         asio::async_write(socket, asio::buffer(response),
             [this, self](std::error_code ec, std::size_t) {
-            if (ec) error("写入错误: " + ec.message());
+            if (ec) {
+                socket.close();
+                return;
+            }
+            reset_parser();
+            do_read();
         });
     }
 };
@@ -614,8 +627,7 @@ void start() {
         strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm);
         time_buf[0] = buf;
     }
-    std::thread time_thread(cctime);
-    time_thread.detach();
+    log_start();
     StartCpuMonitor();
     infost();
     info(project_name + " - " + project_type + " v." + project_version);
@@ -625,10 +637,9 @@ void start() {
     logger("日志系统已初始化");
     string config_path = "config.yaml";
 
-    unsigned int cpu_threads = std::max(2u, std::thread::hardware_concurrency());
+    unsigned int cpu_threads = std::max(200u, std::thread::hardware_concurrency() * 16);
     g_business_pool = std::make_unique<asio::thread_pool>(cpu_threads);
-    unsigned int db_threads = std::max(8u, cpu_threads * 4);
-    g_db_pool = std::make_unique<asio::thread_pool>(db_threads);
+    
 
     SetConsoleCtrlHandler(console_handler, TRUE);
 
@@ -687,10 +698,14 @@ int main() {
         asio::io_context io_context;
         tcp::acceptor acceptor(io_context,
             tcp::endpoint(asio::ip::make_address(ls_IP), port(GlobalConfig->server.port)));
+
         logger("监听IP: " + ls_IP);
         logger("正在监听" + std::to_string(port(GlobalConfig->server.port)) + "端口");
-        std::function<void()> do_a;
-        do_a = [&]() {
+        
+        constexpr int kConcurrentAccepts = 16;  
+
+        std::function<void()> do_accept;
+        do_accept = [&]() {
             acceptor.async_accept(
                 [&](std::error_code ec, tcp::socket socket) {
                 if (!ec) {
@@ -699,11 +714,12 @@ int main() {
                 else if (ec != asio::error::operation_aborted) {
                     error("接受连接错误: " + ec.message());
                 }
-                if (running) do_a();
-            }
-            );
+                if (running) do_accept();
+            });
         };
-        do_a();
+        for (int i = 0; i < kConcurrentAccepts; ++i) {
+            do_accept();
+        }
         unsigned int thread_count = std::thread::hardware_concurrency() * 2;
         if (thread_count == 0) thread_count = 4;
         std::vector<std::thread> io_threads;
@@ -720,11 +736,24 @@ int main() {
 
         logger("服务器正在关闭...");
         acceptor.close();
+        logger("IO线程停止正在关闭");
         io_context.stop();
         for (auto& t : io_threads) {
             if (t.joinable()) t.join();
         }
+        logger("IO线程已停止");
+
+        logger("数据库连接正在释放");
+        g_db.reset();
+        logger("数据库连接已释放");
+
+        logger("业务线程已正在停止");
+        g_business_pool->stop();
+        g_business_pool->join();
+        logger("业务线程已停止");
+        g_business_pool.reset();
         logger("服务器已关闭");
+        log_stop();
     }
     catch (const std::exception& e) {
         error("主函数异常: " + std::string(e.what()));

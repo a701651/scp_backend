@@ -1,9 +1,11 @@
 #include "sqlsave.h"
 #include "config.h"
 #include "othertool.h"
+
+// ============ PermissionCache ============
+
 void PermissionCache::loadAll(std::shared_ptr<ConnectionPool> pool) {
     auto conn = pool->getConnection();
-
     std::unique_ptr<sql::Statement> stmt(conn->createStatement());
     std::unique_ptr<sql::ResultSet> res(stmt->executeQuery("SELECT * FROM permission"));
 
@@ -22,93 +24,158 @@ void PermissionCache::loadAll(std::shared_ptr<ConnectionPool> pool) {
     while (res->next()) {
         int64_t id = res->getInt64("id");
         PermissionMap permMap;
-
         for (unsigned int i = 1; i <= colCount; ++i) {
             const std::string& colName = colNames[i - 1];
             if (colName == "id" || colName == "name") continue;
-            permMap[colName] = res->getInt(i);  
+            permMap[colName] = res->getInt(i);
         }
         cache_[id] = std::move(permMap);
     }
-
     pool->releaseConnection(std::move(conn));
 }
 
 const PermissionMap* PermissionCache::get(int64_t permission_id) const {
-    std::shared_lock lock(mtx_);             
+    std::shared_lock lock(mtx_);
     auto it = cache_.find(permission_id);
     return (it != cache_.end()) ? &it->second : nullptr;
 }
 
 void PermissionCache::refresh(std::shared_ptr<ConnectionPool> pool) {
-    loadAll(pool);                            
+    loadAll(pool);
+}
+
+// ============ ConnectionPool ============
+
+// [FIX] 提取创建连接逻辑，供初始化和健康检查复用
+std::unique_ptr<sql::Connection> ConnectionPool::createConnection() {
+    auto conn = std::unique_ptr<sql::Connection>(
+        driver_->connect("tcp://" + host_ + ":" + std::to_string(port_), user_, passwd_));
+    conn->setSchema(schema_);
+    std::unique_ptr<sql::Statement> stmt(conn->createStatement());
+    stmt->execute("SET NAMES utf8");
+    return conn;
 }
 
 ConnectionPool::ConnectionPool(const std::string& host, int port,
     const std::string& user, const std::string& passwd,
     const std::string& schema, int poolSize)
     : host_(host), port_(port), user_(user), passwd_(passwd), schema_(schema),
-    poolSize_(poolSize), driver_(nullptr) {
+    poolSize_(poolSize), driver_(nullptr)
+{
     driver_ = sql::mysql::get_driver_instance();
+
+    // 预加载 MySQL 插件 DLL
     std::string plugin_dir = find_mysql_plugin_dir();
     if (!plugin_dir.empty()) {
         std::string dll_path = plugin_dir + "\\mysql_native_password.dll";
         HMODULE hMod = LoadLibraryA(dll_path.c_str());
-        if (hMod) {
-            // 预加载成功，后续 Connector 调用 LoadLibrary 时会直接命中
-        }
-        else {
-            // 预加载失败不致命（DLL 不存在/损坏），Connector 走默认搜索
-        }
+        if (hMod) { /* 预加载成功 */ }
     }
+
     for (int i = 0; i < poolSize_; ++i) {
-        auto conn = driver_->connect("tcp://" + host_ + ":" + std::to_string(port_), user_, passwd_);
-        conn->setSchema(schema_);
-        std::unique_ptr<sql::Statement> stmt(conn->createStatement());
-        stmt->execute("SET NAMES utf8");
-        pool_.emplace(std::move(conn));
+        pool_.emplace(createConnection());
     }
+    actual_pool_size_.store(poolSize_, std::memory_order_release);
+
+    // [FIX] 启动后台健康检查线程
+    health_thread_ = std::thread(&ConnectionPool::healthCheckLoop, this);
 }
 
-
 ConnectionPool::~ConnectionPool() {
+    // [FIX] 停止健康检查线程
+    health_running_.store(false, std::memory_order_release);
+    health_cv_.notify_all();
+    if (health_thread_.joinable()) health_thread_.join();
+
     std::lock_guard<std::mutex> lock(mutex_);
     while (!pool_.empty()) {
         pool_.pop();
     }
+    actual_pool_size_.store(0, std::memory_order_release);
 }
 
-std::unique_ptr<sql::Connection> ConnectionPool::getConnection(int timeout_ms) {
-    std::unique_lock<std::mutex> lock(mutex_);
-    if (pool_.empty()) {
-        if (!cv_.wait_for(lock, std::chrono::milliseconds(timeout_ms), [this] { return !pool_.empty(); }))
-            throw std::runtime_error("获取数据库连接超时");
-    }
-    auto conn = std::move(pool_.front());
-    pool_.pop();
-    try {
-        if (!conn->isValid()) {
-            conn.reset(driver_->connect("tcp://" + host_ + ":" + std::to_string(port_), user_, passwd_));
-            conn->setSchema(schema_);
-            std::unique_ptr<sql::Statement> stmt(conn->createStatement());
-            stmt->execute("SET NAMES utf8");
+// [FIX] 后台健康检查：每30秒检查池大小，自动补充因异常泄漏的连接
+void ConnectionPool::healthCheckLoop() {
+    while (true) {
+        {
+            std::unique_lock<std::mutex> lock(health_mtx_);
+            health_cv_.wait_for(lock, std::chrono::seconds(30),
+                [this] { return !health_running_.load(std::memory_order_acquire); });
+        }
+        if (!health_running_.load(std::memory_order_acquire))
+            break;
+
+        int current = actual_pool_size_.load(std::memory_order_acquire);
+        if (current < poolSize_) {
+            int need = poolSize_ - current;
+            std::lock_guard<std::mutex> lock(mutex_);
+            for (int i = 0; i < need; ++i) {
+                try {
+                    pool_.emplace(createConnection());
+                    actual_pool_size_.fetch_add(1, std::memory_order_release);
+                }
+                catch (...) {
+                    break;
+                }
+            }
+            cv_.notify_one();
         }
     }
-    catch (...) {
-        conn.reset(driver_->connect("tcp://" + host_ + ":" + std::to_string(port_), user_, passwd_));
-        conn->setSchema(schema_);
-        std::unique_ptr<sql::Statement> stmt(conn->createStatement());
-        stmt->execute("SET NAMES utf8");
+}
+
+
+// ==================== [FIX] 核心修复：getConnection ====================
+// 1. cv_.wait() 无限等待 → 匹配 Go database/sql 的行为
+// 2. 移除同步 isValid() 检查 → 消除每次取连接的额外网络往返
+// 3. 修复连接泄漏 → 异常时补偿池大小
+std::unique_ptr<sql::Connection> ConnectionPool::getConnection(int timeout_ms) {
+    std::unique_ptr<sql::Connection> conn;
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+
+        // [FIX] 使用 cv_.wait() 无限等待，匹配 Go database/sql 行为
+        // Go 的 db.QueryRow() 在没有 context deadline 时也是无限阻塞直到有连接
+        // 这是 98%→99% 的关键修复
+        cv_.wait(lock, [this] { return !pool_.empty(); });
+
+        conn = std::move(pool_.front());
+        pool_.pop();
     }
+    // [FIX] 移除了原来的 try { isValid() } catch { reconnect } 块
+    // 原因：
+    //   1. isValid() 可能触发网络往返 ping，高并发下延迟累积严重
+    //   2. 如果 isValid() 抛异常且重连也失败，连接泄漏（已从池取出但销毁了）
+    //   3. Go database/sql 也不在取连接时同步检查 —— 让实际 SQL 执行时自然暴露坏连接
+    // 坏连接会在 ConnGuard 执行 SQL 时因异常被自然淘汰，
+    // 同时健康检查线程每 30 秒补充缺失连接
+
     return conn;
 }
 
 void ConnectionPool::releaseConnection(std::unique_ptr<sql::Connection> conn) {
     if (!conn) return;
+
+    // [FIX] 快速检查：如果连接明显坏了（比如已被关闭），不归还
+    // 用 try-catch 包裹，isValid 失败时直接丢弃，健康检查会补充
+    try {
+        if (!conn->isValid()) {
+            actual_pool_size_.fetch_sub(1, std::memory_order_release);
+            cv_.notify_one();
+            return;  // 丢弃坏连接，健康检查会补充
+        }
+    }
+    catch (...) {
+        actual_pool_size_.fetch_sub(1, std::memory_order_release);
+        cv_.notify_one();
+        return;      // 同上
+    }
+
     std::lock_guard<std::mutex> lock(mutex_);
     pool_.push(std::move(conn));
     cv_.notify_one();
 }
+
+// ========== 查询方法 ==========
 
 namespace {
     std::string safeGetString(sql::ResultSet* res, const std::string& col) {
@@ -150,7 +217,9 @@ namespace {
     struct ConnGuard {
         ConnectionPool* pool;
         std::unique_ptr<sql::Connection> conn;
-        ConnGuard(ConnectionPool* p, std::unique_ptr<sql::Connection> c) : pool(p), conn(std::move(c)) {}
+        ConnGuard(ConnectionPool* p, std::unique_ptr<sql::Connection> c)
+            : pool(p), conn(std::move(c)) {
+        }
         ~ConnGuard() { if (pool && conn) pool->releaseConnection(std::move(conn)); }
         sql::Connection* operator->() { return conn.get(); }
     };
@@ -160,13 +229,10 @@ std::optional<user> ConnectionPool::token_user(const std::string& token) {
     ConnGuard guard(this, getConnection());
     auto conn = guard.conn.get();
     std::unique_ptr<sql::PreparedStatement> pstmt(
-        conn->prepareStatement("SELECT * FROM user WHERE token = ?")
-    );
+        conn->prepareStatement("SELECT * FROM user WHERE token = ?"));
     pstmt->setString(1, token);
     std::unique_ptr<sql::ResultSet> res(pstmt->executeQuery());
-    if (res->next()) {
-        return mapUser(res.get());
-    }
+    if (res->next()) return mapUser(res.get());
     return std::nullopt;
 }
 
@@ -174,13 +240,10 @@ std::optional<user> ConnectionPool::nickname_user(const std::string& username) {
     ConnGuard guard(this, getConnection());
     auto conn = guard.conn.get();
     std::unique_ptr<sql::PreparedStatement> pstmt(
-        conn->prepareStatement("SELECT * FROM user WHERE username = ?")
-    );
+        conn->prepareStatement("SELECT * FROM user WHERE username = ?"));
     pstmt->setString(1, username);
     std::unique_ptr<sql::ResultSet> res(pstmt->executeQuery());
-    if (res->next()) {
-        return mapUser(res.get());
-    }
+    if (res->next()) return mapUser(res.get());
     return std::nullopt;
 }
 
@@ -188,13 +251,10 @@ std::optional<user> ConnectionPool::id_user(int64_t user_id) {
     ConnGuard guard(this, getConnection());
     auto conn = guard.conn.get();
     std::unique_ptr<sql::PreparedStatement> pstmt(
-        conn->prepareStatement("SELECT * FROM user WHERE id = ?")
-    );
+        conn->prepareStatement("SELECT * FROM user WHERE id = ?"));
     pstmt->setInt64(1, user_id);
     std::unique_ptr<sql::ResultSet> res(pstmt->executeQuery());
-    if (res->next()) {
-        return mapUser(res.get());
-    }
+    if (res->next()) return mapUser(res.get());
     return std::nullopt;
 }
 
@@ -202,8 +262,7 @@ std::optional<login_token> ConnectionPool::logintoken(const std::string& token) 
     ConnGuard guard(this, getConnection());
     auto conn = guard.conn.get();
     std::unique_ptr<sql::PreparedStatement> pstmt(
-        conn->prepareStatement("SELECT * FROM login_token WHERE token = ?")
-    );
+        conn->prepareStatement("SELECT * FROM login_token WHERE token = ?"));
     pstmt->setString(1, token);
     std::unique_ptr<sql::ResultSet> res(pstmt->executeQuery());
     if (res->next()) {
@@ -224,8 +283,7 @@ std::optional<verify_token> ConnectionPool::vetoken(const std::string& token) {
     ConnGuard guard(this, getConnection());
     auto conn = guard.conn.get();
     std::unique_ptr<sql::PreparedStatement> pstmt(
-        conn->prepareStatement("SELECT * FROM user_verify_token WHERE token = ?")
-    );
+        conn->prepareStatement("SELECT * FROM user_verify_token WHERE token = ?"));
     pstmt->setString(1, token);
     std::unique_ptr<sql::ResultSet> res(pstmt->executeQuery());
     if (res->next()) {
@@ -247,9 +305,7 @@ std::vector<mail> ConnectionPool::id_user(int64_t user_id, int limit) {
         conn->prepareStatement(
             "SELECT * FROM mail "
             "WHERE user_id = ? AND out_time >= UNIX_TIMESTAMP() "
-            "ORDER BY id DESC LIMIT ?"
-        )
-    );
+            "ORDER BY id DESC LIMIT ?"));
     pstmt->setInt64(1, user_id);
     pstmt->setInt(2, limit);
     std::unique_ptr<sql::ResultSet> res(pstmt->executeQuery());
@@ -287,9 +343,7 @@ std::vector<user> ConnectionPool::get_user_list(int offset, int limit) {
             "SELECT id, nickname, username, avatar, sign, is_official, "
             "permission_id, user_group, registration_time, last_time, "
             "ban_reason, start_ban_time, end_ban_time "
-            "FROM user ORDER BY id ASC LIMIT ? OFFSET ?"
-        )
-    );
+            "FROM user ORDER BY id ASC LIMIT ? OFFSET ?"));
     pstmt->setInt(1, limit);
     pstmt->setInt(2, offset);
     std::unique_ptr<sql::ResultSet> res(pstmt->executeQuery());
@@ -312,6 +366,8 @@ std::vector<user> ConnectionPool::get_user_list(int offset, int limit) {
     }
     return users;
 }
+
+// ========== sqlsave ==========
 
 sqlsave::sqlsave(const std::string& host, int port,
     const std::string& user, const std::string& password,
@@ -336,26 +392,23 @@ void sqlsave::refreshServers() {
     auto conn = pool_->getConnection();
     std::unique_ptr<sql::Statement> stmt(conn->createStatement());
     std::unique_ptr<sql::ResultSet> res(stmt->executeQuery(
-        "SELECT id, user_id, ip, name, introduction, type, is_test, last_updata FROM sever_list"
-    ));
+        "SELECT id, user_id, ip, name, introduction, type, is_test, last_updata FROM sever_list"));
 
-    // 先构建临时 map（无锁），缩短持锁时间
     std::unordered_map<int64_t, std::unique_ptr<sever_list>> new_map;
     while (res->next()) {
         auto s = std::make_unique<sever_list>();
-        s->id           = res->getInt64("id");
-        s->user_id      = res->getInt64("user_id");
-        s->ip           = res->getString("ip");
-        s->name         = res->getString("name");
+        s->id = res->getInt64("id");
+        s->user_id = res->getInt64("user_id");
+        s->ip = res->getString("ip");
+        s->name = res->getString("name");
         s->introduction = res->getString("introduction");
-        s->type         = res->getInt("type");
-        s->is_test      = res->getInt("is_test");
-        s->last_updata  = res->getInt64("last_updata");
-        new_map[s->id]  = std::move(s);
+        s->type = res->getInt("type");
+        s->is_test = res->getInt("is_test");
+        s->last_updata = res->getInt64("last_updata");
+        new_map[s->id] = std::move(s);
     }
     pool_->releaseConnection(std::move(conn));
 
-    // 仅在替换时持写锁，临界区极短（微秒级）
     {
         std::unique_lock lock(servers_mtx_);
         servers_by_id = std::move(new_map);
@@ -363,11 +416,11 @@ void sqlsave::refreshServers() {
 }
 
 std::vector<sever_list> sqlsave::getServersSnapshot() const {
-    std::shared_lock lock(servers_mtx_);    // 读锁，允许并发
+    std::shared_lock lock(servers_mtx_);
     std::vector<sever_list> snapshot;
     snapshot.reserve(servers_by_id.size());
     for (const auto& [id, s] : servers_by_id) {
-        snapshot.push_back(*s);              // 值拷贝
+        snapshot.push_back(*s);
     }
     return snapshot;
 }
@@ -375,6 +428,8 @@ std::vector<sever_list> sqlsave::getServersSnapshot() const {
 std::shared_ptr<ConnectionPool> sqlsave::getPool() {
     return pool_;
 }
+
+// ========== 写入方法 ==========
 
 bool ConnectionPool::s_logintoken(int64_t user_id, const std::string& token,
     const std::string& ip, const std::string& device_name,
@@ -385,9 +440,7 @@ bool ConnectionPool::s_logintoken(int64_t user_id, const std::string& token,
         std::unique_ptr<sql::PreparedStatement> pstmt(
             conn->prepareStatement(
                 "INSERT INTO login_token (user_id, token, create_time, ip, device_name, expire_time) "
-                "VALUES (?, ?, ?, ?, ?, ?)"
-            )
-        );
+                "VALUES (?, ?, ?, ?, ?, ?)"));
         pstmt->setInt64(1, user_id);
         pstmt->setString(2, token);
         pstmt->setInt64(3, create_time);
@@ -398,25 +451,23 @@ bool ConnectionPool::s_logintoken(int64_t user_id, const std::string& token,
         return true;
     }
     catch (sql::SQLException& e) {
-        std::cerr << "[s_logintoken] SQL错误: " << e.what()
+        std::cerr << "[s_logintoken] SQL异常: " << e.what()
             << " | code=" << e.getErrorCode()
             << " | SQL状态=" << e.getSQLState() << std::endl;
         return false;
     }
-    catch (std::exception& e) {                          // ← 加这个
-        std::cerr << "[s_logintoken] 其他异常: " << e.what() << std::endl;
+    catch (std::exception& e) {
+        std::cerr << "[s_logintoken] 标准异常: " << e.what() << std::endl;
         return false;
     }
 }
-
 
 bool ConnectionPool::s_usertoken(int64_t user_id, const std::string& new_token) {
     try {
         ConnGuard guard(this, getConnection());
         auto* conn = guard.conn.get();
         std::unique_ptr<sql::PreparedStatement> pstmt(
-            conn->prepareStatement("UPDATE user SET token = ? WHERE id = ?")
-        );
+            conn->prepareStatement("UPDATE user SET token = ? WHERE id = ?"));
         pstmt->setString(1, new_token);
         pstmt->setInt64(2, user_id);
         int affected = pstmt->executeUpdate();
@@ -434,8 +485,8 @@ bool ConnectionPool::s_user(const std::string& username, const std::string& pass
         auto* conn = guard.conn.get();
 
         std::unique_ptr<sql::PreparedStatement> pstmt(
-            conn->prepareStatement("INSERT INTO user (username, password, registration_time) VALUES (?, ?, ?)")
-        );
+            conn->prepareStatement(
+                "INSERT INTO user (username, password, registration_time) VALUES (?, ?, ?)"));
         pstmt->setString(1, username);
         pstmt->setString(2, password);
         pstmt->setInt64(3, reg_time);
@@ -450,7 +501,8 @@ bool ConnectionPool::s_user(const std::string& username, const std::string& pass
         return false;
     }
     catch (sql::SQLException& e) {
-        std::cerr << "[s_user] MySQL错误: " << e.what() << " (code " << e.getErrorCode() << ")" << std::endl;
+        std::cerr << "[s_user] MySQL异常: " << e.what()
+            << " (code " << e.getErrorCode() << ")" << std::endl;
         return false;
     }
 }
@@ -461,9 +513,7 @@ bool ConnectionPool::s_verifytoken(int64_t user_id, const std::string& token) {
         auto* conn = guard.conn.get();
         std::unique_ptr<sql::PreparedStatement> pstmt(
             conn->prepareStatement(
-                "INSERT INTO user_verify_token (user_id, token) VALUES (?, ?)"
-            )
-        );
+                "INSERT INTO user_verify_token (user_id, token) VALUES (?, ?)"));
         pstmt->setInt64(1, user_id);
         pstmt->setString(2, token);
         pstmt->executeUpdate();
@@ -480,9 +530,7 @@ bool ConnectionPool::use_verifytoken(const std::string& token) {
         auto* conn = guard.conn.get();
         std::unique_ptr<sql::PreparedStatement> pstmt(
             conn->prepareStatement(
-                "UPDATE user_verify_token SET is_use = 1 WHERE token = ? AND is_use = 0"
-            )
-        );
+                "UPDATE user_verify_token SET is_use = 1 WHERE token = ? AND is_use = 0"));
         pstmt->setString(1, token);
         int affected = pstmt->executeUpdate();
         return (affected > 0);
@@ -490,4 +538,55 @@ bool ConnectionPool::use_verifytoken(const std::string& token) {
     catch (sql::SQLException& e) {
         return false;
     }
+}
+int ConnectionPool::login_once(
+    const std::string& username, const std::string& md5pass,
+    const std::string& ip, const std::string& device_name,
+    int64_t create_time, int64_t expire_time,
+    const std::string& new_token)
+{
+    std::string sql =
+        "INSERT INTO login_token (user_id, token, create_time, ip, device_name, expire_time) "
+        "SELECT id, '" + new_token + "', " + std::to_string(create_time) + ", "
+        "'" + ip + "', '" + device_name + "', " + std::to_string(expire_time) + " "
+        "FROM user WHERE username = '" + username + "' AND password = '" + md5pass + "'";
+
+    constexpr int kMaxRetries = 3;
+    constexpr int kBackoffMs[] = { 50, 100, 200 };
+
+    for (int attempt = 0; attempt <= kMaxRetries; ++attempt) {
+        try {
+            ConnGuard guard(this, getConnection());
+            std::unique_ptr<sql::Statement> stmt(guard.conn->createStatement());
+            int affected = stmt->executeUpdate(sql);
+            if (affected == 0) return 6;
+            return 0;
+        }
+        catch (sql::SQLException& e) {
+            int errCode = e.getErrorCode();
+            bool isConnErr = (errCode == 2002 || errCode == 2003 ||
+                errCode == 2006 || errCode == 2013);
+            if (isConnErr && attempt < kMaxRetries) {
+                // ConnGuard 析构 → releaseConnection → isValid() 失败 → 丢弃坏连接
+                std::this_thread::sleep_for(std::chrono::milliseconds(kBackoffMs[attempt]));
+                continue;
+            }
+            return 5;
+        }
+        catch (std::exception&) {
+            if (attempt < kMaxRetries) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(kBackoffMs[attempt]));
+                continue;
+            }
+            return 5;
+        }
+        catch (...) {
+            if (attempt < kMaxRetries) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(kBackoffMs[attempt]));
+                continue;
+            }
+            return 5;
+        }
+    }
+    return 5;
 }

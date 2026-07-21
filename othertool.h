@@ -10,7 +10,10 @@ public:
     static std::string MD5(const std::string& input);
     static std::string GenerateToken();
 };
-
+class TokenCache {
+public:
+    static std::string Get();
+};
 // ∏Ò ΩªØ
 std::string FormatPercent(double value, double total);
 

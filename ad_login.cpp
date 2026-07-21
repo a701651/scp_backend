@@ -3,7 +3,7 @@
 #include"sqlsave.h"
 #include "othertool.h"
 #include "config.h"
-#include "LOG.h"
+#include"log-system.h"
 using namespace std;
 /*
 	* 状态码：
@@ -42,7 +42,7 @@ int adlog(const string& username, const string& pass,const string& ip, const str
     if (it == perms->end() || it->second != 1) return 7;
 
     int64_t now = time(nullptr);
-    string token = encrypt::GenerateToken();
+    string token = TokenCache::Get();
     int64_t expire = now + GlobalConfig->server.login_expire;
     if (!pool->s_logintoken(search->id, token, ip, "Admin Login", now, expire))
         return 5;

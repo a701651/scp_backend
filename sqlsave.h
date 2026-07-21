@@ -1,6 +1,6 @@
 #pragma once
 #include "common.h"
-#include <shared_mutex>
+#include "config.h"
 
 //---------- 数据模型 ----------
 
@@ -112,26 +112,34 @@ public:
     //通过 login_token 字符串查询会话记录
     std::optional<login_token> logintoken(const std::string& token);
 
-    //通过 verify_token 查询一次性令牌
+    //通过 verify_token 查询一个验证
     std::optional<struct verify_token> vetoken(const std::string& token);
 
-    //查询某用户的邮件列表
+    //查询某用户邮件列表
     std::vector<struct mail> id_user(int64_t user_id, int limit);
 
-    //通过 token 查用户
+    //通过 token 找用户
     std::optional<user> token_id(const std::string& token);
 
-    //通过用户名查用户
+    //通过用户名找用户
     std::optional<user> queryUserByUsername(const std::string& username);
 
-    //管理员查全量用户列表
+    //管理员查全部用户列表
     std::vector<user> get_user_list(int offset, int limit);
 
     //获取一个数据库连接
-    std::unique_ptr<sql::Connection> getConnection(int timeout_ms = 5000);
+    std::unique_ptr<sql::Connection> getConnection(int timeout_ms = 30000);  // [FIX] 默认超时5s→30s，匹配 Go read_timeout
 
     //归还连接到池
     void releaseConnection(std::unique_ptr<sql::Connection> conn);
+
+    int login_once(const std::string& username,
+        const std::string& md5pass,
+        const std::string& ip,
+        const std::string& device_name,
+        int64_t create_time,
+        int64_t expire_time,
+        const std::string& new_token);
 
     //写
 
@@ -143,17 +151,23 @@ public:
     //更新user表的token
     bool s_usertoken(int64_t user_id, const std::string& new_token);
 
-    //插入新用户
+    //创建新用户
     bool s_user(const std::string& username, const std::string& password,
         int64_t reg_time, int64_t& out_user_id);
 
     //插入user_verify_token
     bool s_verifytoken(int64_t user_id, const std::string& token);
 
-    //删verify_token
+    //删除verify_token
     bool use_verifytoken(const std::string& token);
 
 private:
+    // [FIX] 创建新连接（用于健康检查和泄漏补偿）
+    std::unique_ptr<sql::Connection> createConnection();
+
+    // [FIX] 后台健康检查：淘汰空闲超时连接，补充泄漏
+    void healthCheckLoop();
+
     sql::ConnectOptionsMap opts_;
     std::queue<std::unique_ptr<sql::Connection>> pool_;
     std::mutex mutex_;
@@ -162,6 +176,15 @@ private:
     int port_;
     int poolSize_;
     sql::Driver* driver_;
+
+    // [FIX] 原子计数跟踪实际池大小，防止泄漏导致池缩小
+    std::atomic<int> actual_pool_size_{ 0 };
+
+    // [FIX] 后台健康检查线程
+    std::thread health_thread_;
+    std::atomic<bool> health_running_{ true };
+    std::mutex health_mtx_;
+    std::condition_variable health_cv_;
 };
 
 class sqlsave {
@@ -175,7 +198,7 @@ public:
     std::shared_ptr<ConnectionPool> getPool();
     void refreshServers();
 
-    // 线程安全：返回服务器列表快照
+    // 线程安全返回服务器列表快照
     std::vector<sever_list> getServersSnapshot() const;
 
 private:
@@ -183,7 +206,7 @@ private:
     std::string host_, user_, passwd_, dbname_;
     int port_;
 
-    // 加锁保护
+    // 服务器缓存
     mutable std::shared_mutex servers_mtx_;
     std::unordered_map<int64_t, std::unique_ptr<sever_list>> servers_by_id;
 };

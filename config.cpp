@@ -25,7 +25,7 @@ bool creat_config(const std::string& path) {
     emitter << YAML::Key << "password" << YAML::Value << "your_password";
     emitter << YAML::Key << "dbname" << YAML::Value << "game";
     emitter << YAML::Key << "charset" << YAML::Value << "utf8mb4";
-    emitter << YAML::Key << "max_open_conns" << YAML::Value << 20;
+    emitter << YAML::Key << "max_open_conns" << YAML::Value << 300;
     emitter << YAML::Key << "max_idle_conns" << YAML::Value << 10;
     emitter << YAML::Key << "conn_max_lifetime" << YAML::Value << 600;
     emitter << YAML::Key << "conn_max_idle_time" << YAML::Value << 300;

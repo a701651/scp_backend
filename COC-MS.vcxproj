@@ -157,7 +157,7 @@
     <ClInclude Include="getmail.h" />
     <ClInclude Include="get_token.h" />
     <ClInclude Include="gzpi.h" />
-    <ClInclude Include="LOG.h" />
+    <ClInclude Include="log-system.h" />
     <ClInclude Include="login.h" />
     <ClInclude Include="othertool.h" />
     <ClInclude Include="register.h" />

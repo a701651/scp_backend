@@ -315,6 +315,54 @@ std::optional<user> check_permission_get_user(
     }
     return opt_user;
 }
+namespace {
+    struct TokenPool {
+        std::mutex              mtx;
+        std::vector<std::string> tokens;
+        std::atomic<bool>       started{ false };
+        std::thread             worker;
+
+        ~TokenPool() {
+            started.store(false, std::memory_order_release);
+            if (worker.joinable()) worker.join();
+        }
+    };
+
+    TokenPool& g_tpool() {
+        static TokenPool tp;
+        if (!tp.started.exchange(true, std::memory_order_acquire)) {
+            tp.worker = std::thread([] {
+                auto& p = g_tpool();
+                std::vector<std::string> batch;
+                batch.reserve(128);
+                while (p.started.load(std::memory_order_acquire)) {
+                    batch.clear();
+                    for (int i = 0; i < 128; ++i)
+                        batch.push_back(encrypt::GenerateToken());
+                    {
+                        std::lock_guard<std::mutex> lk(p.mtx);
+                        p.tokens.insert(p.tokens.end(),
+                            std::make_move_iterator(batch.begin()),
+                            std::make_move_iterator(batch.end()));
+                    }
+                    std::this_thread::sleep_for(std::chrono::microseconds(500));
+                }
+            });
+        }
+        return tp;
+    }
+}
+
+std::string TokenCache::Get() {
+    auto& p = g_tpool();
+    std::lock_guard<std::mutex> lk(p.mtx);
+    if (p.tokens.empty()) {
+        return encrypt::GenerateToken();  
+    }
+    auto t = std::move(p.tokens.back());
+    p.tokens.pop_back();
+    return t;
+}
 std::string find_mysql_plugin_dir() {
     namespace fs = std::filesystem;
 

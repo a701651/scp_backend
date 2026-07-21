@@ -29,3 +29,9 @@
 #include <stdexcept>
 #include <functional>
 #include <zlib.h>
+#include <shared_mutex>
+#include <atomic>
+#include <thread>
+#include <mutex>
+#include <cstring>
+#include <atomic>
