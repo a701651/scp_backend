@@ -44,9 +44,6 @@ void PermissionCache::refresh(std::shared_ptr<ConnectionPool> pool) {
     loadAll(pool);
 }
 
-// ============ ConnectionPool ============
-
-// [FIX] 提取创建连接逻辑，供初始化和健康检查复用
 std::unique_ptr<sql::Connection> ConnectionPool::createConnection() {
     auto conn = std::unique_ptr<sql::Connection>(
         driver_->connect("tcp://" + host_ + ":" + std::to_string(port_), user_, passwd_));
@@ -64,7 +61,6 @@ ConnectionPool::ConnectionPool(const std::string& host, int port,
 {
     driver_ = sql::mysql::get_driver_instance();
 
-    // 预加载 MySQL 插件 DLL
     std::string plugin_dir = find_mysql_plugin_dir();
     if (!plugin_dir.empty()) {
         std::string dll_path = plugin_dir + "\\mysql_native_password.dll";
@@ -76,13 +72,10 @@ ConnectionPool::ConnectionPool(const std::string& host, int port,
         pool_.emplace(createConnection());
     }
     actual_pool_size_.store(poolSize_, std::memory_order_release);
-
-    // [FIX] 启动后台健康检查线程
     health_thread_ = std::thread(&ConnectionPool::healthCheckLoop, this);
 }
 
 ConnectionPool::~ConnectionPool() {
-    // [FIX] 停止健康检查线程
     health_running_.store(false, std::memory_order_release);
     health_cv_.notify_all();
     if (health_thread_.joinable()) health_thread_.join();
@@ -94,7 +87,6 @@ ConnectionPool::~ConnectionPool() {
     actual_pool_size_.store(0, std::memory_order_release);
 }
 
-// [FIX] 后台健康检查：每30秒检查池大小，自动补充因异常泄漏的连接
 void ConnectionPool::healthCheckLoop() {
     while (true) {
         {
@@ -123,51 +115,33 @@ void ConnectionPool::healthCheckLoop() {
     }
 }
 
-
-// ==================== [FIX] 核心修复：getConnection ====================
-// 1. cv_.wait() 无限等待 → 匹配 Go database/sql 的行为
-// 2. 移除同步 isValid() 检查 → 消除每次取连接的额外网络往返
-// 3. 修复连接泄漏 → 异常时补偿池大小
 std::unique_ptr<sql::Connection> ConnectionPool::getConnection(int timeout_ms) {
     std::unique_ptr<sql::Connection> conn;
     {
         std::unique_lock<std::mutex> lock(mutex_);
 
-        // [FIX] 使用 cv_.wait() 无限等待，匹配 Go database/sql 行为
-        // Go 的 db.QueryRow() 在没有 context deadline 时也是无限阻塞直到有连接
-        // 这是 98%→99% 的关键修复
         cv_.wait(lock, [this] { return !pool_.empty(); });
 
         conn = std::move(pool_.front());
         pool_.pop();
     }
-    // [FIX] 移除了原来的 try { isValid() } catch { reconnect } 块
-    // 原因：
-    //   1. isValid() 可能触发网络往返 ping，高并发下延迟累积严重
-    //   2. 如果 isValid() 抛异常且重连也失败，连接泄漏（已从池取出但销毁了）
-    //   3. Go database/sql 也不在取连接时同步检查 —— 让实际 SQL 执行时自然暴露坏连接
-    // 坏连接会在 ConnGuard 执行 SQL 时因异常被自然淘汰，
-    // 同时健康检查线程每 30 秒补充缺失连接
 
     return conn;
 }
 
 void ConnectionPool::releaseConnection(std::unique_ptr<sql::Connection> conn) {
     if (!conn) return;
-
-    // [FIX] 快速检查：如果连接明显坏了（比如已被关闭），不归还
-    // 用 try-catch 包裹，isValid 失败时直接丢弃，健康检查会补充
     try {
         if (!conn->isValid()) {
             actual_pool_size_.fetch_sub(1, std::memory_order_release);
             cv_.notify_one();
-            return;  // 丢弃坏连接，健康检查会补充
+            return; 
         }
     }
     catch (...) {
         actual_pool_size_.fetch_sub(1, std::memory_order_release);
         cv_.notify_one();
-        return;      // 同上
+        return;      
     }
 
     std::lock_guard<std::mutex> lock(mutex_);
@@ -567,7 +541,6 @@ int ConnectionPool::login_once(
             bool isConnErr = (errCode == 2002 || errCode == 2003 ||
                 errCode == 2006 || errCode == 2013);
             if (isConnErr && attempt < kMaxRetries) {
-                // ConnGuard 析构 → releaseConnection → isValid() 失败 → 丢弃坏连接
                 std::this_thread::sleep_for(std::chrono::milliseconds(kBackoffMs[attempt]));
                 continue;
             }

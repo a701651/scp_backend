@@ -56,14 +56,13 @@ int log(const string& username, const string& pass,
     for (size_t i = 0; i < plen; ++i)
         if (!kValidChar[static_cast<unsigned char>(pass[i])]) return 4;
 
-    // [FIX] device_name 白名单校验 — 文本 SQL 安全前提
     if (!device.empty()) {
         for (size_t i = 0; i < device.size(); ++i)
             if (!kValidDeviceChar[static_cast<unsigned char>(device[i])]) return 4;
     }
 
     string md5pass = encrypt::MD5(pass);
-    string token = TokenCache::Get();       // [FIX] 预生成池，避免 BCryptGenRandom
+    string token = TokenCache::Get();    
     int64_t now = time(nullptr);
     int64_t expire = now + GlobalConfig->server.login_expire;
 

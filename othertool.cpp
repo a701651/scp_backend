@@ -367,14 +367,10 @@ std::string find_mysql_plugin_dir() {
     namespace fs = std::filesystem;
 
     constexpr const char* TARGET_DLL = "mysql_native_password.dll";
-
-    // 策略 1：exe 目录\Lib\plugin
     fs::path lib_plugin = fs::path(getpath()) / "plugin";
     if (fs::exists(lib_plugin / TARGET_DLL)) {
         return lib_plugin.string();
     }
-
-    // 策略 2：扫描 MySQL Connector 安装目录
     auto try_add = [](std::vector<fs::path>& paths, const char* env_name) {
         char buf[MAX_PATH];
         DWORD len = GetEnvironmentVariableA(env_name, buf, MAX_PATH);

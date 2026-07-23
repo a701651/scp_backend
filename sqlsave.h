@@ -162,10 +162,7 @@ public:
     bool use_verifytoken(const std::string& token);
 
 private:
-    // [FIX] 创建新连接（用于健康检查和泄漏补偿）
     std::unique_ptr<sql::Connection> createConnection();
-
-    // [FIX] 后台健康检查：淘汰空闲超时连接，补充泄漏
     void healthCheckLoop();
 
     sql::ConnectOptionsMap opts_;
@@ -176,11 +173,7 @@ private:
     int port_;
     int poolSize_;
     sql::Driver* driver_;
-
-    // [FIX] 原子计数跟踪实际池大小，防止泄漏导致池缩小
     std::atomic<int> actual_pool_size_{ 0 };
-
-    // [FIX] 后台健康检查线程
     std::thread health_thread_;
     std::atomic<bool> health_running_{ true };
     std::mutex health_mtx_;
