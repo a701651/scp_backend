@@ -3,7 +3,7 @@
 **语言**：C++20  
 **数据库**：MySQL  
 **依赖**：zlib、libmysqlclient / mysql-connector-c++、LLHTTP  
-
+**环境**:WINDOWS
 ---
 
 ## 1. 项目结构
