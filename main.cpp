@@ -28,6 +28,8 @@ std::string project_name = "SCP:Completely Out of Control";
 std::string project_type = "Local";
 std::string project_author = "68575";
 std::string project_version = "0.4.0";
+std::string logsystem_name = "CRS";
+std::string logsystem_version = "0.1.0";
 std::string ls_IP = "0.0.0.0";
 //全局
 std::atomic<bool> running{ true };
@@ -631,6 +633,7 @@ void start() {
     StartCpuMonitor();
     infost();
     info(project_name + " - " + project_type + " v." + project_version);
+    info("LOG-SYSTEM:" + logsystem_name + " v." + logsystem_version);
     info("请输入help获取指令帮助.");
     info("\xC2\xA9 版权占位符,按需分配 2026-2026");
     infost();
